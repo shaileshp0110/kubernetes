@@ -31,12 +31,12 @@ graph TD
 
 1.  **Start the environment**:
     ```bash
+    cd apps
     ./infrastructure/setup-minikube.sh
     ```
     This script builds the container images locally inside Minikube and bootstraps ArgoCD.
 
-2.  **Verify Synchronization**:
-    Access the ArgoCD UI (credentials provided by the script) to see your services syncing from your GitHub repositories.
+2.  **Verify Synchronization** — see [ArgoCD UI](#argocd-ui) below.
 
 3.  **Run Rotation Test**:
     ```bash
@@ -47,6 +47,55 @@ graph TD
     - Rotate the key in Vault.
     - Decrypt the original message with the Java service.
     - Prove that old data is still readable after a rotation.
+
+## ArgoCD UI
+
+ArgoCD runs inside the cluster — it is not exposed on localhost by default. You must port-forward (or use `minikube service`) before opening the UI.
+
+### Option A: Port-forward (recommended)
+
+In a **separate terminal**, run this and **leave it open** while you use the UI:
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
+Then open in your browser:
+
+**https://localhost:8080**
+
+> Use `https://`, not `http://`. Your browser will warn about the certificate — that is expected for local port-forward; proceed anyway.
+
+**Login credentials:**
+
+| Field    | Value   |
+|----------|---------|
+| Username | `admin` |
+| Password | printed at the end of `setup-minikube.sh`, or retrieve with: |
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+You should see Applications such as `vault`, `postgres`, `frontend-dev`, `backend-dev`, and the encryption services. Green status means synced and healthy.
+
+### Option B: Minikube service URL
+
+```bash
+minikube service argocd-server -n argocd --url
+```
+
+Open the URL printed by that command.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| **Connection refused** on localhost:8080 | Port-forward is not running | Start `kubectl port-forward ...` in a terminal and keep it open |
+| Port-forward terminal was closed | Forwarding stops when the process exits | Re-run the port-forward command |
+| Port 8080 already in use | Another process owns the port | Use a different local port: `kubectl port-forward svc/argocd-server -n argocd 9090:443` then open https://localhost:9090 |
+| Blank page or TLS error | Used `http://` instead of `https://` | Open **https://localhost:8080** |
 
 ## Summary of Fixes Applied
 - **Manifest Cleanup**: Fixed `env` variable formatting to match the Helm chart's expected array structure.
