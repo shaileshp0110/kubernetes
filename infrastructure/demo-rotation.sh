@@ -21,30 +21,30 @@ kube_curl() {
 run_demo_for_key() {
   local KEY_NAME=$1
   local KEY_TYPE=$2
-  
+
   echo ""
   echo -e "${CYAN}>>> Testing Key: $KEY_NAME ($KEY_TYPE)${NC}"
-  
+
   # 1. Get initial version
   KEY_INFO=$(kubectl exec -n vault vault-0 -- vault read -format=json transit/keys/$KEY_NAME)
   CURRENT_VERSION=$(echo "$KEY_INFO" | jq -r '.data.latest_version')
   echo -e "Initial version: ${GREEN}$CURRENT_VERSION${NC}"
-  
+
   # 2. Encrypt with Node.js
   echo "Encrypting with Node.js..."
   ENCRYPT_RESPONSE=$(kube_curl -s -X POST "$NODE_SERVICE/encrypt" -H "Content-Type: application/json" -d "{\"plaintext\": \"Hello $KEY_TYPE\", \"key\": \"$KEY_NAME\"}")
   CIPHERTEXT=$(echo "$ENCRYPT_RESPONSE" | jq -r '.ciphertext')
   echo -e "Ciphertext: ${CYAN}${CIPHERTEXT:0:50}...${NC}"
-  
+
   # 3. Rotate
   echo "Rotating key in Vault..."
   kubectl exec -n vault vault-0 -- vault write -f transit/keys/$KEY_NAME/rotate
-  
+
   # 4. Decrypt with Java
   echo "Decrypting with Java..."
   DECRYPT_RESPONSE=$(kube_curl -s -X POST "$JAVA_SERVICE/decrypt" -H "Content-Type: application/json" -d "{\"ciphertext\": \"$CIPHERTEXT\", \"key\": \"$KEY_NAME\"}")
   PLAINTEXT=$(echo "$DECRYPT_RESPONSE" | jq -r '.plaintext')
-  
+
   if [ "$PLAINTEXT" == "Hello $KEY_TYPE" ]; then
     echo -e "${GREEN}✅ SUCCESS: Decrypted '$PLAINTEXT' after rotation.${NC}"
   else

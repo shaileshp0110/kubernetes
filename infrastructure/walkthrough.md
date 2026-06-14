@@ -40,13 +40,19 @@ graph TD
 
 3.  **Run Rotation Test**:
     ```bash
+    # Basic demo — single rotation, symmetric + asymmetric keys
     ./infrastructure/demo-rotation.sh
+
+    # Multi-rotation demo — encrypt at v1, rotate N times, verify decrypt still works
+    ./infrastructure/demo-rotation-n.sh 2   # rotate twice  (key ends at v3)
+    ./infrastructure/demo-rotation-n.sh 5   # rotate 5 times (key ends at v6)
+
+    # Dual-version demo — encrypt at v1 and v3, rotate once more, decrypt both
+    ./infrastructure/demo-rotation-v1-v3.sh
     ```
-    This script will:
-    - Encrypt a message with the Node.js service.
-    - Rotate the key in Vault.
-    - Decrypt the original message with the Java service.
-    - Prove that old data is still readable after a rotation.
+    `demo-rotation.sh` encrypts with Node.js, rotates once, and decrypts with Java.
+    `demo-rotation-n.sh` resets each key to v1, encrypts, rotates **N** times, then proves the original v1 ciphertext still decrypts.
+    `demo-rotation-v1-v3.sh` encrypts one message at **v1** and another at **v3**, rotates once more to **v4**, then decrypts both — proving Vault retains every key version.
 
 ## ArgoCD UI
 
