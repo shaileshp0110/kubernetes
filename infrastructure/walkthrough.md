@@ -102,6 +102,67 @@ Open the URL printed by that command.
 | Port-forward terminal was closed | Forwarding stops when the process exits | Re-run the port-forward command |
 | Port 8080 already in use | Another process owns the port | Use a different local port: `kubectl port-forward svc/argocd-server -n argocd 9090:443` then open https://localhost:9090 |
 | Blank page or TLS error | Used `http://` instead of `https://` | Open **https://localhost:8080** |
+| **Connection lost** / port-forward exits | Cluster stopped or deleted | Expected — restart cluster and re-run port-forward |
+
+## Stopping and Cleanup
+
+When you're done with the demo, shut things down at the level you need.
+
+### Stop port-forwards first
+
+Close any terminals still running:
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+minikube tunnel
+```
+
+If the cluster stops, port-forwards will exit with **"lost connection to pod"** — that is normal.
+
+### Pause the cluster (keep data, resume later)
+
+Stops all pods but keeps the cluster and its state on disk:
+
+```bash
+minikube stop
+```
+
+Start again with:
+
+```bash
+minikube start
+```
+
+### Delete the cluster (full teardown)
+
+Removes the cluster and everything deployed (ArgoCD, Vault, apps, postgres):
+
+```bash
+minikube delete
+```
+
+### Complete cleanup (free disk space)
+
+Removes all minikube profiles and cached images:
+
+```bash
+minikube delete --all --purge
+```
+
+### What to use when
+
+| Goal | Command |
+|------|---------|
+| Pause, resume later | `minikube stop` |
+| Done with this demo | `minikube delete` |
+| Free disk space / fresh start | `minikube delete --all --purge` |
+
+### Start again from scratch
+
+```bash
+cd apps
+./infrastructure/setup-minikube.sh
+```
 
 ## Summary of Fixes Applied
 - **Manifest Cleanup**: Fixed `env` variable formatting to match the Helm chart's expected array structure.
