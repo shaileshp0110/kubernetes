@@ -2,6 +2,9 @@
 
 I have implemented a production-grade GitOps architecture using two GitHub repositories and HashiCorp Vault.
 
+> **Full system diagram & deep-dive:** see [`ARCHITECTURE.md`](./ARCHITECTURE.md) — layered
+> architecture, Istio service mesh, security model, data flows, and operations.
+
 ## Architecture
 
 This setup uses a dual-repository pattern:
@@ -26,6 +29,7 @@ graph TD
 - **Multi-Language Demo**: Proves interoperability between Node.js and Java using Vault as a shared encryption provider.
 - **Full GitOps**: Uses the "App of Apps" pattern where a top-level `dev-environment` Application manages all other services.
 - **Vault Transit Engine**: Handles encryption-as-a-service, allowing data to stay encrypted while keys are rotated in the background.
+- **Service Mesh (Istio)**: Optional zero-trust mTLS layer — see [Service Mesh](#service-mesh-istio) below.
 
 ## Running the Demo locally
 
@@ -103,6 +107,51 @@ Open the URL printed by that command.
 | Port 8080 already in use | Another process owns the port | Use a different local port: `kubectl port-forward svc/argocd-server -n argocd 9090:443` then open https://localhost:9090 |
 | Blank page or TLS error | Used `http://` instead of `https://` | Open **https://localhost:8080** |
 | **Connection lost** / port-forward exits | Cluster stopped or deleted | Expected — restart cluster and re-run port-forward |
+
+## Service Mesh (Istio)
+
+The platform can be layered with a zero-trust Istio service mesh. Detailed topology and
+policies are in [`ARCHITECTURE.md`](./ARCHITECTURE.md#service-mesh-istio).
+
+### Install
+
+```bash
+cd apps
+./infrastructure/setup-istio.sh
+```
+
+The script is idempotent and runs: preflight checks → ArgoCD Applications
+(`istio-base` → `istiod` → `istio-ingressgateway` → `kiali`, ordered by sync-wave) →
+mesh config (STRICT mTLS + allow-list AuthorizationPolicies + Prometheus monitors) →
+sidecar injection on `default` + workload rollout.
+
+> The `istio-ingressgateway` is deployed as the mesh-native edge. On minikube, run
+> `minikube tunnel` so its `LoadBalancer` service gets an external IP (`127.0.0.1`).
+> Its ArgoCD health may show `Degraded` for the LB service even when the deployment is
+> `1/1` — that is cosmetic. Gateway chart is pinned to **1.27.1** because ArgoCD's
+> repo-server runs Helm v4, whose strict schema validation rejects older gateway charts.
+
+### Verify
+
+```bash
+kubectl get pods -n default                    # app pods show 2/2 (app + istio-proxy)
+kubectl get peerauthentication -A              # STRICT mTLS
+kubectl get authorizationpolicy -A             # deny-all + explicit ALLOW rules
+```
+
+### Kiali (mesh UI)
+
+```bash
+kubectl port-forward svc/kiali -n istio-system 20001:20001
+# http://localhost:20001  (anonymous auth for local demo)
+```
+
+### Demo scripts under the mesh
+
+The rotation scripts create throwaway `curl-test` pods. With sidecar injection enabled on
+`default`, those pods would get an Envoy sidecar and fail to exit under `--rm -i`. They
+already opt out with the annotation `sidecar.istio.io/inject: "false"` in their `kube_curl`
+helper — no change needed to run the demos against a meshed cluster.
 
 ## Stopping and Cleanup
 

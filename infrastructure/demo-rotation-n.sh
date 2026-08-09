@@ -40,7 +40,11 @@ ROTATIONS=$1
 EXPECTED_FINAL_VERSION=$((ROTATIONS + 1))
 
 kube_curl() {
-  kubectl run curl-test --image=curlimages/curl --rm -i --restart=Never --quiet -- "$@" 2>/dev/null
+  # sidecar.istio.io/inject=false keeps this throwaway pod out of the mesh so it
+  # exits cleanly with --rm -i (a sidecar would block pod termination).
+  kubectl run curl-test --image=curlimages/curl --rm -i --restart=Never --quiet \
+    --overrides='{"metadata":{"annotations":{"sidecar.istio.io/inject":"false"}}}' \
+    -- "$@" 2>/dev/null
 }
 
 get_latest_version() {
