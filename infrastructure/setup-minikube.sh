@@ -38,22 +38,26 @@ else
   minikube start --cpus 4 --memory "${MINIKUBE_MEMORY}"
 fi
 
+# NGINX ingress controller — without it the frontend/backend Ingresses never get an
+# address and their ArgoCD Applications stay "Progressing".
+minikube addons enable ingress
+
 # --- 2. Build Docker Images inside Minikube ---
 echo ""
 echo "--- 2. Building Docker Images in Minikube ---"
 eval $(minikube docker-env)
 
 echo "Building encryption-service (Node.js)..."
-docker build -t encryption-service:latest "$PROJECT_ROOT/apps/encryption-service"
+docker build -t encryption-service:latest "$PROJECT_ROOT/kubernetes/encryption-service"
 
 echo "Building encryption-service-java (Java/Spring Boot)..."
-docker build -t encryption-service-java:latest "$PROJECT_ROOT/apps/encryption-service-java"
+docker build -t encryption-service-java:latest "$PROJECT_ROOT/kubernetes/encryption-service-java"
 
 echo "Building frontend..."
-docker build -t frontend:latest "$PROJECT_ROOT/apps/frontend"
+docker build -t frontend:latest "$PROJECT_ROOT/kubernetes/frontend"
 
 echo "Building backend..."
-docker build -t backend:latest "$PROJECT_ROOT/apps/backend"
+docker build -t backend:latest "$PROJECT_ROOT/kubernetes/backend"
 
 echo "Docker images built successfully."
 
@@ -80,29 +84,21 @@ echo ""
 echo ""
 echo "--- 4. Deploying Core Infrastructure ---"
 
-# Apply Vault (uses Helm chart repo directly, no git needed)
-kubectl apply -f "$PROJECT_ROOT/gitops-config/clusters/local-cluster/vault.yaml"
-echo "Vault Application created."
+# Root app-of-apps: owns every Application in gitops-config/clusters/local-cluster
+# (vault, postgres, prometheus, frontend, backend, dev-environment). ArgoCD recreates
+# any child Application that gets deleted. Istio is excluded (see setup-istio.sh).
+kubectl apply -f "$PROJECT_ROOT/gitops-config/clusters/root-local.yaml"
+echo "Root Application created."
 
-# Apply core infrastructure (postgres, prometheus - also from Helm chart repos)
-kubectl apply -f "$PROJECT_ROOT/gitops-config/clusters/local-cluster/core-infrastructure.yaml"
-echo "Core infrastructure Applications created."
 # StatefulSets keep old pods on image changes — recreate postgres after ArgoCD syncs
+kubectl wait --for=jsonpath='{.metadata.name}'=postgres application/postgres -n argocd --timeout=180s 2>/dev/null || true
 kubectl wait --for=condition=Synced application/postgres -n argocd --timeout=180s 2>/dev/null || true
 kubectl delete pod postgres-postgresql-0 -n default --ignore-not-found 2>/dev/null || true
 
 # --- 5. Deploy Dev Environment via ArgoCD ---
 echo ""
 echo "--- 5. Deploying Dev Environment ---"
-
-# Remove app-of-apps that syncs frontend/backend from GitHub (would revert local image settings)
-kubectl delete application dev-environment -n argocd --ignore-not-found --cascade=orphan
-
-kubectl apply -f "$PROJECT_ROOT/gitops-config/environments/dev/encryption-service/Application.yaml"
-kubectl apply -f "$PROJECT_ROOT/gitops-config/environments/dev/encryption-service-java/Application.yaml"
-kubectl apply -f "$PROJECT_ROOT/gitops-config/clusters/local-cluster/local-dev-frontend.yaml"
-kubectl apply -f "$PROJECT_ROOT/gitops-config/clusters/local-cluster/local-dev-backend.yaml"
-echo "Dev environment Applications created (local images for frontend/backend)."
+echo "Dev environment Applications are created by the root Application."
 echo ""
 echo "ArgoCD will deploy:"
 echo "  - encryption-service, encryption-service-java (from GitHub)"
