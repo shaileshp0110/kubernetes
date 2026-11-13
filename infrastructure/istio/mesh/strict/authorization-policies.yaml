@@ -1,0 +1,57 @@
+# Authorization policies — applied together with STRICT mTLS.
+#
+# Posture: default-deny at the namespace boundary; allow only
+#   1. the Istio ingress gateway (north-south traffic),
+#   2. same-namespace traffic (authenticated by mTLS),
+#   3. Prometheus scraping from the monitoring namespace.
+#
+# Next hardening step (documented in ARCHITECTURE.md): replace the
+# namespace-level rules with per-service identities, e.g.
+#   source.principals: ["cluster.local/ns/default/sa/backend"]
+
+# Deny everything by default; explicit ALLOW policies below win.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: default
+spec: {}
+---
+# North-south: traffic entering via the Istio ingress gateway.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-from-istio-ingress
+  namespace: default
+spec:
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - istio-ingress
+---
+# East-west: service-to-service inside the namespace (mTLS authenticated).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: default
+spec:
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - default
+---
+# Observability: Prometheus scrapes metrics without a sidecar.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-monitoring
+  namespace: default
+spec:
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - monitoring

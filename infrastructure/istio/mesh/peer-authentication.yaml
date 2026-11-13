@@ -1,0 +1,18 @@
+# mTLS posture for application workloads (namespace: default).
+#
+# PERMISSIVE is the industry-standard *migration* posture: meshed pods accept
+# both mTLS and plaintext, so existing non-meshed clients (e.g. the curl pods
+# used by the demo scripts, kubelet probes) keep working while sidecars roll
+# out. Once you have verified traffic, switch to STRICT:
+#
+#   kubectl apply -f mesh/strict/peer-authentication-strict.yaml
+#
+# See ARCHITECTURE.md for the full migration path.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  mtls:
+    mode: PERMISSIVE

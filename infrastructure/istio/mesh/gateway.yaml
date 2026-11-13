@@ -1,0 +1,17 @@
+# Edge Gateway for myapp.local, bound to the istio-ingressgateway pods
+# (label istio: ingressgateway, set by the gateway Helm release).
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata:
+  name: myapp-gateway
+  namespace: default
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - myapp.local

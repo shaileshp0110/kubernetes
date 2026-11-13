@@ -1,0 +1,13 @@
+# Mesh-wide Envoy access logging via the Telemetry API.
+# The `envoy` provider is wired to /dev/stdout in meshConfig (see
+# argocd/istiod.yaml), so logs land in each sidecar's container logs:
+#   kubectl logs deploy/backend -c istio-proxy
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: mesh-default
+  namespace: istio-system
+spec:
+  accessLogging:
+    - providers:
+        - name: envoy

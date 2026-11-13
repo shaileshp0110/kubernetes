@@ -1,0 +1,60 @@
+# Istio control plane (istiod). Depends on istio-base CRDs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: istiod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://istio-release.storage.googleapis.com/charts
+    chart: istiod
+    targetRevision: 1.30.3
+    helm:
+      releaseName: istiod
+      values: |
+        # Sized for single-node minikube; raise for real clusters.
+        pilot:
+          autoscaleEnabled: false
+          replicaCount: 1
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        global:
+          proxy:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+        meshConfig:
+          # Envoy access logs to stdout; scraped via `kubectl logs` / log stack.
+          accessLogFile: /dev/stdout
+          defaultProviders:
+            accessLogging:
+              - envoy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,33 @@
+# North-south routing for myapp.local via the ingress gateway.
+# Mirrors the existing NGINX ingress behaviour:
+#   /api/* -> backend:3000   (Node.js API, with retries + timeout)
+#   /*     -> frontend:80    (React SPA served by nginx)
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: myapp
+  namespace: default
+spec:
+  hosts:
+    - myapp.local
+  gateways:
+    - myapp-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /api
+      route:
+        - destination:
+            host: backend
+            port:
+              number: 3000
+      timeout: 10s
+      retries:
+        attempts: 3
+        perTryTimeout: 3s
+        retryOn: connect-failure,refused-stream,unavailable,5xx
+    - route:
+        - destination:
+            host: frontend
+            port:
+              number: 80

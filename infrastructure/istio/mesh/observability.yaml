@@ -1,0 +1,53 @@
+# Prometheus scrape integration for the existing kube-prometheus-stack.
+#
+# The `release: kube-prometheus-stack` label is required because the
+# kube-prometheus-stack chart defaults serviceMonitorSelector /
+# podMonitorSelector to its own release labels. If your Prometheus release
+# has a different name, change the label value to match.
+
+# Control-plane metrics (istiod :15014).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istiod
+  namespace: istio-system
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      istio: pilot
+  endpoints:
+    - port: http-monitoring
+      interval: 15s
+---
+# Data-plane metrics — Envoy sidecar stats (:15090/stats/prometheus) for
+# every meshed pod, cluster-wide.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: envoy-stats
+  namespace: istio-system
+  labels:
+    release: kube-prometheus-stack
+spec:
+  jobLabel: envoy-stats
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+      - key: istio-prometheus-ignore
+        operator: DoesNotExist
+  podMetricsEndpoints:
+    - path: /stats/prometheus
+      interval: 15s
+      relabelings:
+        - action: keep
+          sourceLabels: [__meta_kubernetes_pod_container_port_name]
+          regex: ".*-envoy-prom"
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_namespace]
+          targetLabel: namespace

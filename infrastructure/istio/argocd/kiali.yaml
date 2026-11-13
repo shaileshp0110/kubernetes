@@ -1,0 +1,45 @@
+# Kiali — service mesh observability console (topology graph, traffic,
+# mTLS status, config validation). Reads metrics from the existing
+# kube-prometheus-stack in the monitoring namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kiali
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-7"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://kiali.org/helm-charts
+    chart: kiali-server
+    targetRevision: 2.29.0
+    helm:
+      releaseName: kiali-server
+      values: |
+        auth:
+          strategy: anonymous # local demo only — use token/OIDC elsewhere
+        external_services:
+          prometheus:
+            # Service created by kube-prometheus-stack (core-infrastructure).
+            url: http://kube-prometheus-stack-prometheus.monitoring:9090
+          grafana:
+            enabled: true
+            in_cluster_url: http://kube-prometheus-stack-grafana.monitoring:80
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: istio-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
+    syncOptions:
+      - CreateNamespace=true

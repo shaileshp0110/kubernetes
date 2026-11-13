@@ -1,0 +1,27 @@
+# STRICT mTLS — zero-trust end state for app workloads (namespace: default).
+#
+# Apply only AFTER the PERMISSIVE phase is verified (see ARCHITECTURE.md):
+#   kubectl apply -f mesh/strict/peer-authentication-strict.yaml
+#   kubectl apply -f mesh/strict/authorization-policies.yaml
+#
+# Notes:
+# - Calls to non-meshed services (Vault, kube-apiserver) keep working:
+#   Istio auto-mTLS only upgrades to ISTIO_MUTUAL when the destination
+#   endpoints run sidecars, and falls back to plaintext otherwise.
+# - Port 15020 stays PERMISSIVE so Prometheus (which has no sidecar) can
+#   keep scraping the merged Envoy+app metrics endpoint.
+# - Postgres is intentionally NOT in the mesh (see setup-istio.sh), so no
+#   port exception for 5432 is needed here.
+# - Plaintext clients inside the cluster (e.g. the demo scripts' curl pod)
+#   will be REJECTED once STRICT is on. Run demos before enabling STRICT.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  mtls:
+    mode: STRICT
+    portLevelMtls:
+      15020:
+        mode: PERMISSIVE
