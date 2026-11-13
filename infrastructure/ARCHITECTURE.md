@@ -28,46 +28,88 @@ reconciled by ArgoCD from a declarative config repository.
 
 ```mermaid
 flowchart TB
-    subgraph Edge["Edge / Ingress"]
-        IG["Istio Ingress Gateway<br/>(Envoy, mTLS terminate)<br/>+ nginx Ingress (demo app)"]
+    USER(["Browser<br/>http://myapp.local"])
+    TUNNEL["minikube tunnel<br/>(127.0.0.1 → LoadBalancer)"]
+
+    subgraph Repos["Git repositories"]
+        CODE[("kubernetes repo<br/>app source + scripts")]
+        GITOPS[("gitops-config repo<br/>GitHub — desired state")]
     end
 
-    subgraph Mesh["Service Mesh — namespace: default (sidecar-injected)"]
-        FE["frontend<br/>nginx + React"]
-        BE["backend<br/>Node.js API"]
-        ENC["encryption-service<br/>Node.js"]
-        ENCJ["encryption-service-java<br/>Spring Boot"]
-        PG[("postgres<br/>PostgreSQL")]
+    subgraph Cluster["minikube cluster"]
+        subgraph NSArgo["namespace: argocd"]
+            ARGO["ArgoCD<br/>server · repo-server · application-controller<br/>applicationset · notifications · dex · redis"]
+            ROOT["root-local<br/>(app-of-apps)"]
+            DEVENV["dev-environment<br/>(app-of-apps: encryption-*)"]
+        end
+
+        subgraph NSIstio["namespace: istio-system"]
+            ISTIOD["istiod<br/>control plane · CA · sidecar injector"]
+            IGW["istio-ingressgateway<br/>Envoy edge proxy (LoadBalancer :80)"]
+            KIALI["Kiali<br/>mesh topology UI"]
+        end
+
+        subgraph NSDefault["namespace: default (istio-injection=enabled)"]
+            ROUTE["Gateway myapp-gateway<br/>+ VirtualService myapp"]
+            subgraph Mesh["Meshed pods (app + istio-proxy sidecar)"]
+                FE["frontend-dev ×2<br/>React SPA on nginx :8080"]
+                BE["backend-dev ×2<br/>Node.js API :3000"]
+                ENC["encryption-service<br/>Node.js :3000"]
+                ENCJ["encryption-service-java<br/>Spring Boot :8080"]
+            end
+            PG[("postgres<br/>PostgreSQL :5432<br/>not meshed")]
+        end
+
+        subgraph NSVault["namespace: vault"]
+            VAULT["Vault<br/>Transit secrets engine :8200"]
+            VINJ["vault-agent-injector"]
+        end
+
+        subgraph NSMon["namespace: monitoring (kube-prometheus-stack)"]
+            PROM["Prometheus"]
+            GRAF["Grafana"]
+            AM["Alertmanager"]
+            EXP["prometheus-operator<br/>kube-state-metrics · node-exporter"]
+        end
     end
 
-    subgraph Platform["Platform"]
-        VAULT["Vault<br/>Transit secrets engine"]
-        PROM["Prometheus<br/>kube-prometheus-stack"]
-        GRAF["Grafana"]
-    end
+    IMG["Local images<br/>(minikube Docker daemon)"]
 
-    subgraph Control["Control / GitOps"]
-        ARGO["ArgoCD"]
-        ISTIOD["istiod<br/>Istio control plane"]
-        KIALI["Kiali<br/>mesh topology"]
-    end
+    USER --> TUNNEL --> IGW
+    ROUTE -.->|configures| IGW
+    IGW -->|"/ (mTLS)"| FE
+    IGW -->|"/api (mTLS)"| BE
+    BE -->|SQL| PG
+    ENC -->|transit encrypt/decrypt| VAULT
+    ENCJ -->|transit encrypt/decrypt| VAULT
 
-    GITOPS[("gitops-config repo<br/>(GitHub — desired state)")]
+    CODE -->|docker build| IMG
+    IMG -.->|pullPolicy: Never| Mesh
+    GITOPS -->|polled by| ARGO
+    ARGO --- ROOT
+    ROOT -->|owns| DEVENV
+    ROOT -.->|"creates Applications:<br/>vault, postgres, kube-prometheus-stack,<br/>frontend-dev, backend-dev"| Cluster
+    DEVENV -.->|creates Applications| ENC
+    DEVENV -.->|creates Applications| ENCJ
 
-    ARGO -->|syncs manifests| GITOPS
-    ISTIOD -.->|issues certs / config| Mesh
-    IG --> FE
-    IG --> BE
-    FE --> BE
-    BE --> PG
-    BE --> ENC
-    ENC --> VAULT
-    ENCJ --> VAULT
-    PROM -.->|scrapes sidecar + istiod metrics| Mesh
-    KIALI -.->|reads| ISTIOD
-    KIALI -.->|queries| PROM
+    ISTIOD -.->|xDS config + mTLS certs| Mesh
+    ISTIOD -.->|xDS config + mTLS certs| IGW
+    PROM -.->|scrapes sidecars, istiod, backend /metrics| Mesh
+    PROM --> AM
     GRAF -.->|queries| PROM
+    KIALI -.->|queries| PROM
+    KIALI -.->|reads| ISTIOD
 ```
+
+**Reading the diagram**
+
+- **Solid arrows** are request/data paths; **dotted arrows** are control, config, or scrape paths.
+- **Edge:** the only way in is the Istio ingress gateway. There is no NGINX ingress controller.
+- **GitOps:** `root-local` owns every Application manifest in `gitops-config/clusters/local-cluster/`,
+  so a deleted child Application is recreated. The Istio Applications (`istio.yaml`) are excluded
+  from the root and installed by `setup-istio.sh`.
+- **Encryption services** are called by the rotation demo scripts. `mesh-authz.yaml` also allows
+  `backend-dev` to call them, but the backend code does not do so today.
 
 ---
 
@@ -75,13 +117,13 @@ flowchart TB
 
 | Layer | Technology | Responsibility |
 |-------|-----------|----------------|
-| **Edge** | Istio Ingress Gateway + nginx Ingress | North-south entry, mTLS termination, routing; `minikube tunnel` exposes localhost |
+| **Edge** | Istio Ingress Gateway (`Gateway` + `VirtualService`) | North-south entry for `myapp.local`, routing, mTLS to app pods; `minikube tunnel` exposes localhost |
 | **Service Mesh** | Istio (Envoy sidecars) | East-west mTLS, authorization, traffic telemetry |
 | **Application** | Node.js, Spring Boot, React/nginx | Business logic, encryption API, UI |
 | **Secrets / Crypto** | HashiCorp Vault (Transit) | Key custody, encrypt/decrypt, key rotation |
 | **Data** | PostgreSQL (Bitnami legacy) | Relational persistence |
 | **Observability** | Prometheus, Grafana, Kiali | Metrics, dashboards, mesh topology |
-| **Delivery / Control** | ArgoCD, istiod | GitOps reconciliation, mesh config & certs |
+| **Delivery / Control** | ArgoCD (app-of-apps), istiod | GitOps reconciliation and self-heal, mesh config & certs |
 
 ---
 
@@ -98,19 +140,25 @@ flowchart LR
 
     subgraph Cluster["Kubernetes cluster"]
         ARGO["ArgoCD"]
+        ROOT["root-local<br/>(app-of-apps)"]
+        DEVENV["dev-environment<br/>(app-of-apps)"]
         W1["vault"]
         W2["core-infrastructure<br/>(postgres, prometheus)"]
-        W3["istio-*<br/>(base, istiod, gateway, kiali)"]
-        W4["apps<br/>(frontend, backend, encryption-*)"]
+        W3["istio-*<br/>(base, istiod, gateway, kiali, istio-config)"]
+        W4["frontend-dev, backend-dev"]
+        W5["encryption-service-dev,<br/>encryption-service-java-dev"]
     end
 
     CODE -->|docker build| IMG["Local images<br/>(minikube daemon)"]
     CFG -->|git push| GHR[("github.com/<br/>shaileshp0110/gitops-config")]
     GHR -->|poll / refresh| ARGO
-    ARGO -->|apply| W1
-    ARGO -->|apply| W2
-    ARGO -->|apply| W3
-    ARGO -->|apply| W4
+    ARGO --> ROOT
+    ROOT -->|owns| W1
+    ROOT -->|owns| W2
+    ROOT -->|owns| W4
+    ROOT -->|owns| DEVENV
+    DEVENV -->|owns| W5
+    ARGO -->|"apply (setup-istio.sh)"| W3
 ```
 
 **GitOps contract**
@@ -122,9 +170,17 @@ flowchart LR
 - Sync-wave annotations order installation so dependencies (CRDs, control plane) exist
   before dependents.
 
-> Note: `clusters/local-cluster/local-dev-{frontend,backend}.yaml` override image values so
-> local minikube images are used without first pushing the values change to GitHub. The
-> app-of-apps `dev-environment.yaml` intentionally excludes frontend/backend for local runs.
+**App-of-apps**
+
+- `clusters/root-local.yaml` (`root-local`) is the one Application applied by hand. It owns every
+  Application manifest in `clusters/local-cluster/` and has `selfHeal` + `prune`, so deleting a
+  child Application (for example `frontend-dev`) recreates it within seconds.
+- `dev-environment` is a second-level app-of-apps for `environments/dev/` (the two encryption
+  services). It excludes frontend/backend, which use the local-image variants below.
+- `istio.yaml` is excluded from the root; `setup-istio.sh` applies it.
+
+> Note: `clusters/local-cluster/local-dev-{frontend,backend}.yaml` set image values so local
+> minikube images (`pullPolicy: Never`) are used instead of registry images.
 
 ---
 
@@ -133,8 +189,9 @@ flowchart LR
 ### Control plane vs data plane
 
 The Istio control plane (istiod) programs Envoy sidecars and the ingress gateway, and issues
-mTLS certs. The **Istio ingress gateway** is the mesh-native edge; the demo app also keeps the
-nginx Ingress addon for its `myapp.local` host routing.
+mTLS certs. The **Istio ingress gateway** is the only edge: `Gateway/myapp-gateway` accepts
+`myapp.local` on port 80 and `VirtualService/myapp` routes `/api` to `backend-dev:3000` and
+everything else to `frontend-dev:80`.
 
 ```mermaid
 flowchart TB
@@ -172,9 +229,9 @@ flowchart TB
 |-----------|-----------|------------------|
 | **mTLS everywhere** | `PeerAuthentication` → `STRICT` | `istio-config/mesh-mtls.yaml` |
 | **Deny-all + allow-list authz** | `AuthorizationPolicy` `{}` + explicit ALLOW rules | `istio-config/mesh-authz.yaml` |
-| **Local nginx ingress workaround** | Port-level `PERMISSIVE` on app HTTP ports | `istio-config/mesh-local-ingress.yaml` |
+| **Prometheus scrape exception** | Port-level `PERMISSIVE` on backend `:3000`; authz limits plaintext peers to `/metrics` | `istio-config/mesh-mtls.yaml`, `mesh-authz.yaml` |
 | **Traffic telemetry** | `ServiceMonitor` (istiod) + `PodMonitor` (Envoy :15090) | `istio-config/mesh-metrics.yaml` |
-| **Edge routing** | `istio-ingressgateway` (mesh) + nginx Ingress (demo host) | `istio.yaml` |
+| **Edge routing** | `istio-ingressgateway` + `Gateway` / `VirtualService` for `myapp.local` | `istio.yaml`, `istio-config/mesh-ingress.yaml` |
 | **Topology UI** | Kiali reading istiod + Prometheus | `istio.yaml` |
 
 ### Sidecar injection & opt-out
@@ -230,8 +287,7 @@ sequenceDiagram
 | Component | Kind | Namespace | In Mesh | Notes |
 |-----------|------|-----------|:-------:|-------|
 | istiod | Deployment | `istio-system` | — | Control plane: config + CA |
-| istio-ingressgateway | Deployment | `istio-system` | — | Mesh edge proxy (Envoy) |
-| nginx-ingress-controller | Deployment | `ingress-nginx` | — | Demo app host routing (minikube addon) |
+| istio-ingressgateway | Deployment | `istio-system` | — | Edge proxy (Envoy); `LoadBalancer` Service, routes `myapp.local` |
 | kiali | Deployment | `istio-system` | ✓ | Mesh topology / traffic UI |
 | frontend | Deployment | `default` | ✓ | React + nginx |
 | backend | Deployment | `default` | ✓ | Node.js REST API → postgres |
@@ -242,7 +298,10 @@ sequenceDiagram
 | prometheus | StatefulSet | `monitoring` | ✗ | kube-prometheus-stack |
 | grafana | Deployment | `monitoring` | ✗ | Dashboards |
 | alertmanager | StatefulSet | `monitoring` | ✗ | Alerting |
+| prometheus-operator, kube-state-metrics, node-exporter | Deploy/DaemonSet | `monitoring` | ✗ | Part of kube-prometheus-stack |
+| vault-agent-injector | Deployment | `vault` | ✗ | Installed by the Vault chart |
 | argocd-server + controllers | Deploy/Stateful | `argocd` | ✗ | GitOps engine |
+| root-local, dev-environment | ArgoCD Application | `argocd` | — | App-of-apps parents (self-heal child Applications) |
 
 **Mesh membership rule:** application traffic carriers (frontend, backend, encryption-*) are
 meshed. Platform/control components (Vault, postgres, prometheus, grafana, argocd) are kept
@@ -257,15 +316,15 @@ outside the mesh to isolate the secret store and avoid control-plane coupling.
 ```mermaid
 sequenceDiagram
     participant B as Browser
-    participant GW as nginx Ingress
+    participant GW as Istio ingress gateway
     participant FE as frontend
     participant BE as backend
     participant DB as postgres
 
-    B->>GW: https://myapp.local/ 
-    GW->>FE: forward (HTTP)
-    B->>GW: https://myapp.local/api/users
-    GW->>BE: forward (HTTP)
+    B->>GW: http://myapp.local/
+    GW->>FE: route / (mTLS to sidecar)
+    B->>GW: http://myapp.local/api/users
+    GW->>BE: route /api (mTLS to sidecar)
     BE->>DB: SQL (TCP 5432)
     DB-->>BE: rows
     BE-->>B: JSON
@@ -316,7 +375,9 @@ flowchart LR
 
 - **Zero-trust**: no implicit trust between pods; every meshed call is mutually authenticated.
 - **Default-deny**: `AuthorizationPolicy {}` blocks everything; explicit allow rules open only
-  required paths (ingress → apps, backend → postgres, prometheus → scrape).
+  required paths (ingress gateway → frontend/backend, backend → encryption services,
+  prometheus → scrape). The gateway is matched by its SPIFFE identity
+  `cluster.local/ns/istio-system/sa/istio-ingressgateway`.
 - **Key isolation**: Vault Transit keeps private/master keys server-side; apps only call
   encrypt/decrypt. Per-key policies can scope which service uses which key.
 - **Separation of concerns**: secret store (Vault) and data store (postgres) run outside the
@@ -376,7 +437,7 @@ ArgoCD `sync-wave` annotations enforce installation order so dependencies exist 
 | 2 | `frontend-dev`, `backend-dev` | postgres |
 | 5 | `encryption-service`, `encryption-service-java` | vault |
 
-`istio-config/` (kustomize: mTLS + deny-all authz + metrics) is synced by the
+`istio-config/` (kustomize: mTLS + deny-all authz + metrics + `myapp.local` ingress) is synced by the
 `istio-config` Argo CD Application (wave -6). `setup-istio.sh` waits for it and can
 bootstrap from the local tree if gitops-config has not been pushed yet.
 
@@ -387,9 +448,16 @@ bootstrap from the local tree if gitops-config has not been pushed yet.
 ### Bootstrap
 
 ```bash
-cd apps
-./infrastructure/setup-minikube.sh     # cluster + images + ArgoCD + Vault + apps
-./infrastructure/setup-istio.sh        # service mesh (idempotent)
+./infrastructure/setup-minikube.sh     # cluster + images + ArgoCD + root app-of-apps
+./infrastructure/setup-istio.sh        # service mesh + ingress gateway (idempotent)
+```
+
+### Access the app
+
+```bash
+minikube tunnel                                        # separate terminal, keep open
+echo "127.0.0.1 myapp.local" | sudo tee -a /etc/hosts  # once
+# http://myapp.local/  and  http://myapp.local/api/users
 ```
 
 ### Access UIs
@@ -518,7 +586,7 @@ kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods    # raw metrics API
 ```bash
 kubectl get svc,endpoints -n default                   # service -> pod IP mapping
 kubectl describe svc <name> -n default                 # selector + endpoints
-kubectl get ingress -A                                 # ingress rules (myapp.local)
+kubectl get gateway,virtualservice -n default          # edge routing (myapp.local)
 
 # Throwaway curl pod (opted out of the mesh so it exits cleanly)
 kubectl run curl-test --image=curlimages/curl --rm -i --restart=Never --quiet \

@@ -103,8 +103,19 @@ if ! kubectl wait --for=condition=available deployment/istiod -n istio-system --
 fi
 echo -e "${GREEN}Control plane ready.${NC}"
 
+# The gateway pod gets its Envoy image from istiod's injector. If it was created before
+# the injector was ready it keeps the placeholder image "auto" and can never pull —
+# recreate it now that istiod is up.
+if kubectl get pods -n istio-system -l istio=ingressgateway \
+     -o jsonpath='{.items[*].spec.containers[*].image}' 2>/dev/null | grep -qw auto; then
+  echo "  Gateway pod was created before the injector was ready — recreating it."
+  kubectl rollout restart deployment/istio-ingressgateway -n istio-system
+fi
+
 # Note: gateway + kiali settle after the control plane is healthy.
-wait_app istio-ingressgateway
+# The gateway Service is type LoadBalancer: on minikube it gets an external IP (and the
+# Application turns Healthy) only while 'minikube tunnel' is running.
+wait_app istio-ingressgateway 120 || echo -e "  ${YELLOW}Run 'minikube tunnel' in another terminal to give the gateway an external IP.${NC}"
 wait_app kiali
 wait_app istio-config
 
@@ -113,7 +124,7 @@ wait_app istio-config
 # ---------------------------------------------------------------
 echo ""
 echo "--- 4. Mesh config (istio-config Application) ---"
-echo "  mTLS STRICT + deny-all allow-list authz + Prometheus monitors."
+echo "  mTLS STRICT + deny-all allow-list authz + Prometheus monitors + myapp.local Gateway."
 istio_cfg_health=$(kubectl get application istio-config -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "")
 if [ "$istio_cfg_health" != "Healthy" ] && [ -d "$GITOPS_DIR/istio-config" ]; then
   echo -e "  ${YELLOW}istio-config not synced from Git — applying local kustomize bootstrap.${NC}"
@@ -154,6 +165,11 @@ echo ""
 echo "  Kiali UI:   kubectl port-forward svc/kiali -n istio-system 20001:20001"
 echo "              Then open http://localhost:20001"
 echo ""
+echo "  App (via Istio ingress gateway):"
+echo "    minikube tunnel                                   # separate terminal, keep open"
+echo "    echo '127.0.0.1 myapp.local' | sudo tee -a /etc/hosts"
+echo "    Then open http://myapp.local"
+echo ""
 echo "  Verify mesh:"
 echo "    kubectl get pods -n default        # each app pod shows 2/2 (app + istio-proxy)"
 echo "    kubectl get peerauthentication -A"
@@ -161,7 +177,7 @@ echo "    kubectl get authorizationpolicy -A"
 echo ""
 echo "  Migration note (zero-trust):"
 echo "    STRICT mTLS with deny-all + explicit ALLOW policies (see istio-config/)."
-echo "    mesh-local-ingress.yaml adds PERMISSIVE ports for the nginx addon only."
+echo "    myapp.local enters through the Istio ingress gateway (istio-config/mesh-ingress.yaml)."
 echo ""
 echo "  Demo scripts note:"
 echo "    The rotation demo scripts create throwaway curl pods. After enabling the mesh,"

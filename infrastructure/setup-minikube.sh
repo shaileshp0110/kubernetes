@@ -38,10 +38,6 @@ else
   minikube start --cpus 4 --memory "${MINIKUBE_MEMORY}"
 fi
 
-# NGINX ingress controller — without it the frontend/backend Ingresses never get an
-# address and their ArgoCD Applications stay "Progressing".
-minikube addons enable ingress
-
 # --- 2. Build Docker Images inside Minikube ---
 echo ""
 echo "--- 2. Building Docker Images in Minikube ---"
