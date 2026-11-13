@@ -1,139 +1,148 @@
 # Local Kubernetes Environment Setup
 
-This guide walks you through deploying the scalable architecture on a local Kubernetes cluster using `kind` or `minikube`.
+This guide deploys the full stack on a local `minikube` cluster: ArgoCD (GitOps), Vault
+Transit encryption, the demo apps, Prometheus/Grafana, and an Istio service mesh whose
+ingress gateway is the only way into the cluster.
+
+> **Architecture & diagrams:** [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+> **Guided demo:** [`walkthrough.md`](./walkthrough.md)
 
 ## Prerequisites
-- Docker
+
+- Docker (running)
+- `minikube`
 - `kubectl`
-- `kind` or `minikube`
 - `helm`
-- `argocd` CLI (optional, for debugging)
 
-## 1. Create a Local Cluster
+## Repository layout
 
-**Using Minikube (Option A):**
-Start your minikube cluster and enable the standard NGINX Ingress addon.
+The scripts expect this repo and the GitOps config repo to sit side by side:
 
-```bash
-minikube start
-minikube addons enable ingress
+```
+<parent>/
+  kubernetes/      # this repo — app source + infrastructure/ scripts
+  gitops-config/   # https://github.com/shaileshp0110/gitops-config — charts + ArgoCD Applications
 ```
 
-In a separate terminal, run the following command and leave it open so it exposes the Ingress to your localhost:
+ArgoCD reads `gitops-config` **from GitHub**, not from your local folder. Changes there take
+effect only after they are pushed.
+
+## 1. Create the cluster and deploy the stack
+
+From the root of this repo:
+
+```bash
+./infrastructure/setup-minikube.sh
+```
+
+The script:
+
+1. Starts minikube (4 CPUs, up to 8 GB).
+2. Builds the four app images inside minikube's Docker daemon (`pullPolicy: Never`).
+3. Installs ArgoCD.
+4. Applies the root Application `gitops-config/clusters/root-local.yaml` (app-of-apps). It
+   creates and owns every other Application: `vault`, `postgres`, `kube-prometheus-stack`,
+   `frontend-dev`, `backend-dev`, and `dev-environment` (which owns the two encryption
+   services). A deleted child Application is recreated automatically.
+5. Waits for Vault and creates the Transit keys `demo-key-symmetric` and `demo-key-asymmetric`.
+
+Check progress:
+
+```bash
+kubectl get applications -n argocd     # all should be Synced / Healthy
+kubectl get pods -A
+```
+
+## 2. Install the service mesh and ingress gateway
+
+```bash
+./infrastructure/setup-istio.sh
+```
+
+This installs Istio through ArgoCD (`istio-base`, `istiod`, `istio-ingressgateway`, `kiali`,
+`istio-config`), enables sidecar injection on the `default` namespace, and restarts the app
+workloads so they get sidecars.
+
+`istio-config` includes the `Gateway` and `VirtualService` that route `myapp.local`:
+
+| Path | Destination |
+|------|-------------|
+| `/api/*` | `backend-dev:3000` |
+| `/*` | `frontend-dev:80` |
+
+There is no NGINX ingress controller. Without this step the app is not reachable from
+outside the cluster.
+
+## 3. Access the application
+
+The ingress gateway is a `LoadBalancer` Service. On minikube it gets an external IP only
+while a tunnel is running. In a **separate terminal**, run this and leave it open (it asks
+for your password because it binds port 80):
+
 ```bash
 minikube tunnel
 ```
 
----
+Until the tunnel is running, the `istio-ingressgateway` Application shows `Progressing` in
+ArgoCD. That is expected; it turns `Healthy` once the Service has an IP.
 
-**Using Kind (Option B):**
-Create a cluster that maps ports 80/443 to your localhost to allow Ingress access.
-
-```bash
-cat <<EOF | kind create cluster --config=-
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  kubeadmConfigPatches:
-  - |
-    kind: InitConfiguration
-    nodeRegistration:
-      kubeletExtraArgs:
-        node-labels: "ingress-ready=true"
-  extraPortMappings:
-  - containerPort: 80
-    hostPort: 80
-    protocol: TCP
-  - containerPort: 443
-    hostPort: 443
-    protocol: TCP
-EOF
-```
-
-**Install NGINX Ingress Controller:**
-```bash
-kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
-```
-
-Wait until the ingress is ready:
-```bash
-kubectl wait --namespace ingress-nginx \
-  --for=condition=ready pod \
-  --selector=app.kubernetes.io/component=controller \
-  --timeout=90s
-```
-
-## 2. Install ArgoCD
-
-Install ArgoCD in your cluster:
+Map the hostname once:
 
 ```bash
-kubectl create namespace argocd
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+echo "127.0.0.1 myapp.local" | sudo tee -a /etc/hosts
 ```
 
-Port-forward the ArgoCD UI if you want to inspect via browser:
+Then open:
+
+- `http://myapp.local/` — the React interface.
+- `http://myapp.local/api/users` — the Node.js backend.
+
+## 4. ArgoCD UI
+
 ```bash
 kubectl port-forward svc/argocd-server -n argocd 8080:443
 ```
-Login using username `admin`. The password can be retrieved via:
-```bash
-argocd admin initial-password -n argocd
-```
 
-# Infrastructure & Security Demo
-
-This project demonstrates a secure encryption workflow in Kubernetes using HashiCorp Vault's Transit Secret Engine with automatic key rotation.
-
-## Local Setup with Minikube
-
-To run this entire stack on your local machine:
-
-1.  **Run the setup script**:
-    This will start minikube, build the container images locally, and install ArgoCD + Vault.
-    ```bash
-    chmod +x infrastructure/setup-minikube.sh
-    ./infrastructure/setup-minikube.sh
-    ```
-
-2.  **Run the Key Rotation Demo**:
-    Once all pods are running (`kubectl get pods -A`), demonstrate the key rotation:
-    ```bash
-    chmod +x infrastructure/demo-rotation.sh
-    ./infrastructure/demo-rotation.sh
-    ```
-
-## 3. Deploy the Application Stack (GitOps)
-
-Since ArgoCD expects a Git repository, you need to push this code to a Git repository and update the `repoURL` in the `argocd/*.yaml` files.
-
-Once pushed, apply the root ArgoCD manifests:
+Open **https://localhost:8080** (accept the self-signed certificate). Username `admin`;
+password:
 
 ```bash
-kubectl apply -f argocd/postgres.yaml
-kubectl apply -f argocd/backend.yaml
-kubectl apply -f argocd/frontend.yaml
-kubectl apply -f argocd/observability.yaml
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d; echo
 ```
 
-ArgoCD will automatically sync the Helm charts, deploy PostgreSQL, create the Backend and Frontend with their HPAs, and set up Prometheus for observability.
+## 5. Key rotation demo
 
-## 4. Access the Application
+Once the encryption-service pods are running:
 
-Add the following to your `/etc/hosts` file to map `myapp.local` to localhost:
+```bash
+./infrastructure/demo-rotation.sh
 ```
-127.0.0.1   myapp.local
-```
 
-Access the Frontend:
-- Navigating to `http://myapp.local/` will show the React interface.
-- Navigating to `http://myapp.local/api/users` will hit the Node.js backend.
+See [`walkthrough.md`](./walkthrough.md) for the other rotation scenarios.
 
-## 5. View Metrics
+## 6. View metrics
 
-To access Grafana (deployed by the observability stack):
+Grafana:
+
 ```bash
 kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80
 ```
-Login with `admin` / `admin`. You will see Prometheus automatically picking up targets for pods with `ServiceMonitor` attached.
+
+Open http://localhost:3000 and log in with `admin` / `admin`. Prometheus picks up targets
+for pods with a `ServiceMonitor` or `PodMonitor` attached.
+
+Kiali (mesh topology):
+
+```bash
+kubectl port-forward svc/kiali -n istio-system 20001:20001
+```
+
+Open http://localhost:20001.
+
+## Teardown
+
+```bash
+minikube stop      # pause, keep state
+minikube delete    # remove the cluster
+```

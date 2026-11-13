@@ -15,30 +15,35 @@ This setup uses a dual-repository pattern:
 ```mermaid
 graph TD
     A[ArgoCD] -->|Syncs| B[shaileshp0110/gitops-config]
-    B -->|Deploys| C[Vault]
-    B -->|Deploys| D[Encryption Service - Node.js]
-    B -->|Deploys| E[Encryption Service - Java]
+    B -->|Defines| R[root-local - app-of-apps]
+    R -->|Owns| C[Vault]
+    R -->|Owns| P[postgres + kube-prometheus-stack]
+    R -->|Owns| W[frontend-dev + backend-dev]
+    R -->|Owns| DE[dev-environment - app-of-apps]
+    DE -->|Owns| D[Encryption Service - Node.js]
+    DE -->|Owns| E[Encryption Service - Java]
     D -->|Calls| C
     E -->|Calls| C
     C -->|Manages| F[Transit Keys & Rotation]
+    G[Istio ingress gateway] -->|myapp.local /| W
 ```
 
 ## Key Features
 
 - **Dual-Key Support**: Demonstrates rotation for both **Symmetric (AES-256)** and **Asymmetric (RSA-2048)** keys.
 - **Multi-Language Demo**: Proves interoperability between Node.js and Java using Vault as a shared encryption provider.
-- **Full GitOps**: Uses the "App of Apps" pattern where a top-level `dev-environment` Application manages all other services.
+- **Full GitOps**: Uses the "App of Apps" pattern. The top-level `root-local` Application owns every other Application (including `dev-environment`, which owns the encryption services), so a deleted Application is recreated automatically.
 - **Vault Transit Engine**: Handles encryption-as-a-service, allowing data to stay encrypted while keys are rotated in the background.
-- **Service Mesh (Istio)**: Optional zero-trust mTLS layer — see [Service Mesh](#service-mesh-istio) below.
+- **Service Mesh (Istio)**: Zero-trust mTLS layer and the cluster's ingress — see [Service Mesh](#service-mesh-istio) below.
 
 ## Running the Demo locally
 
 1.  **Start the environment**:
+    From the root of this repo:
     ```bash
-    cd apps
     ./infrastructure/setup-minikube.sh
     ```
-    This script builds the container images locally inside Minikube and bootstraps ArgoCD.
+    This script builds the container images locally inside Minikube, installs ArgoCD, and applies the `root-local` app-of-apps.
 
 2.  **Verify Synchronization** — see [ArgoCD UI](#argocd-ui) below.
 
@@ -88,7 +93,7 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath="{.data.password}" | base64 -d; echo
 ```
 
-You should see Applications such as `vault`, `postgres`, `frontend-dev`, `backend-dev`, and the encryption services. Green status means synced and healthy.
+You should see `root-local`, `dev-environment`, `vault`, `postgres`, `kube-prometheus-stack`, `frontend-dev`, `backend-dev`, and the encryption services (plus the `istio-*` and `kiali` Applications after `setup-istio.sh`). Green status means synced and healthy.
 
 ### Option B: Minikube service URL
 
@@ -110,26 +115,45 @@ Open the URL printed by that command.
 
 ## Service Mesh (Istio)
 
-The platform can be layered with a zero-trust Istio service mesh. Detailed topology and
-policies are in [`ARCHITECTURE.md`](./ARCHITECTURE.md#service-mesh-istio).
+The platform runs a zero-trust Istio service mesh. Its ingress gateway is the only way into
+the cluster — there is no NGINX ingress controller, so the app at `myapp.local` is reachable
+only after this step. Detailed topology and policies are in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md#service-mesh-istio).
 
 ### Install
 
 ```bash
-cd apps
 ./infrastructure/setup-istio.sh
 ```
 
 The script is idempotent and runs: preflight checks → ArgoCD Applications
 (`istio-base` → `istiod` → `istio-ingressgateway` → `kiali`, ordered by sync-wave) →
-mesh config (STRICT mTLS + allow-list AuthorizationPolicies + Prometheus monitors) →
-sidecar injection on `default` + workload rollout.
+mesh config (STRICT mTLS + allow-list AuthorizationPolicies + Prometheus monitors +
+`myapp.local` Gateway/VirtualService) → sidecar injection on `default` + workload rollout.
 
-> The `istio-ingressgateway` is deployed as the mesh-native edge. On minikube, run
-> `minikube tunnel` so its `LoadBalancer` service gets an external IP (`127.0.0.1`).
-> Its ArgoCD health may show `Degraded` for the LB service even when the deployment is
-> `1/1` — that is cosmetic. Gateway chart is pinned to **1.27.1** because ArgoCD's
+> The `istio-ingressgateway` Service is a `LoadBalancer`. On minikube, run
+> `minikube tunnel` so it gets an external IP (`127.0.0.1`). Until then its ArgoCD
+> Application shows `Progressing` even though the deployment is `1/1` — that is expected.
+> Gateway chart is pinned to **1.27.1** because ArgoCD's
 > repo-server runs Helm v4, whose strict schema validation rejects older gateway charts.
+
+### Access the app
+
+In a **separate terminal**, run this and leave it open (it asks for your password because
+it binds port 80):
+
+```bash
+minikube tunnel
+```
+
+Map the hostname once:
+
+```bash
+echo "127.0.0.1 myapp.local" | sudo tee -a /etc/hosts
+```
+
+Then open `http://myapp.local/` (React UI) or `http://myapp.local/api/users` (backend).
+Requests go browser → Istio ingress gateway → frontend / backend over mTLS.
 
 ### Verify
 
@@ -137,6 +161,8 @@ sidecar injection on `default` + workload rollout.
 kubectl get pods -n default                    # app pods show 2/2 (app + istio-proxy)
 kubectl get peerauthentication -A              # STRICT mTLS
 kubectl get authorizationpolicy -A             # deny-all + explicit ALLOW rules
+kubectl get gateway,virtualservice -n default  # myapp.local routing
+kubectl get svc istio-ingressgateway -n istio-system   # EXTERNAL-IP 127.0.0.1 while the tunnel runs
 ```
 
 ### Kiali (mesh UI)
@@ -209,8 +235,8 @@ minikube delete --all --purge
 ### Start again from scratch
 
 ```bash
-cd apps
 ./infrastructure/setup-minikube.sh
+./infrastructure/setup-istio.sh
 ```
 
 ## Summary of Fixes Applied
