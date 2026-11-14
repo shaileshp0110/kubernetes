@@ -7,6 +7,20 @@ ingress gateway is the only way into the cluster.
 > **Architecture & diagrams:** [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 > **Guided demo:** [`walkthrough.md`](./walkthrough.md)
 
+## UI quick reference
+
+Once the stack is running (sections 1–3):
+
+| UI | URL | Needs running | Login |
+|----|-----|---------------|-------|
+| App (React frontend) | http://myapp.local/ | `minikube tunnel` | — |
+| Backend API | http://myapp.local/api/users | `minikube tunnel` | — |
+| ArgoCD | https://localhost:8080 | `kubectl port-forward svc/argocd-server -n argocd 8080:443` | `admin` / see section 4 |
+| Grafana | http://localhost:3000 | `kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80` | `admin` / `admin` |
+| Kiali | http://localhost:20001 | `kubectl port-forward svc/kiali -n istio-system 20001:20001` | — |
+
+Run each command in its own terminal and leave it open.
+
 ## Prerequisites
 
 - Docker (running)
@@ -38,12 +52,12 @@ From the root of this repo:
 The script:
 
 1. Starts minikube (4 CPUs, up to 8 GB).
-2. Builds the four app images inside minikube's Docker daemon (`pullPolicy: Never`).
+2. Builds the five app images inside minikube's Docker daemon (`pullPolicy: Never`).
 3. Installs ArgoCD.
 4. Applies the root Application `gitops-config/clusters/root-local.yaml` (app-of-apps). It
    creates and owns every other Application: `vault`, `postgres`, `kube-prometheus-stack`,
    `frontend-dev`, `backend-dev`, and `dev-environment` (which owns the two encryption
-   services). A deleted child Application is recreated automatically.
+   services and `logger-service`). A deleted child Application is recreated automatically.
 5. Waits for Vault and creates the Transit keys `demo-key-symmetric` and `demo-key-asymmetric`.
 
 Check progress:
@@ -97,6 +111,14 @@ Then open:
 - `http://myapp.local/` — the React interface.
 - `http://myapp.local/api/users` — the Node.js backend.
 
+The first request to `myapp.local` can take about 5 seconds: macOS treats `.local` names as
+mDNS and waits for that lookup to time out before reading `/etc/hosts`. Adding an IPv6 entry
+removes the delay:
+
+```bash
+echo "::1 myapp.local" | sudo tee -a /etc/hosts
+```
+
 ## 4. ArgoCD UI
 
 ```bash
@@ -129,8 +151,20 @@ Grafana:
 kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80
 ```
 
-Open http://localhost:3000 and log in with `admin` / `admin`. Prometheus picks up targets
-for pods with a `ServiceMonitor` or `PodMonitor` attached.
+Open http://localhost:3000 and log in with the default credentials:
+
+- Username: `admin`
+- Password: `admin`
+
+Grafana may ask you to change the password on first login; you can skip that. To read the
+current password from the cluster:
+
+```bash
+kubectl get secret kube-prometheus-stack-grafana -n monitoring \
+  -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+Prometheus picks up targets for pods with a `ServiceMonitor` or `PodMonitor` attached.
 
 Kiali (mesh topology):
 
@@ -139,6 +173,61 @@ kubectl port-forward svc/kiali -n istio-system 20001:20001
 ```
 
 Open http://localhost:20001.
+
+Each `kubectl port-forward` blocks its terminal until you stop it. Run the ArgoCD, Grafana
+and Kiali forwards in three separate terminals; pasting them into one starts only the first.
+
+## 7. Scheduled logger service
+
+`logger-service` is a small Rust REST service (`POST /log`, `GET /health`, port 8080). A
+Kubernetes `CronJob`, `logger-service-trigger`, POSTs a message to it every minute, and the
+service writes that message to its log.
+
+```bash
+kubectl get cronjob,jobs -n default
+kubectl logs deploy/logger-service -n default -c microservice -f
+```
+
+The schedule and message are set in `gitops-config/environments/dev/logger-service/values.yaml`.
+
+## Restarting after `minikube stop`
+
+`minikube start` brings the cluster, the pods and the built images back, but not everything:
+
+```bash
+# 1. Start the cluster and wait for the pods
+minikube start
+kubectl get pods -A
+
+# 2. Recreate the Vault Transit engine and keys. Vault runs in dev mode (in-memory),
+#    so they are lost on every restart and the encryption services fail without them.
+kubectl exec -n vault vault-0 -- vault secrets enable transit
+kubectl exec -n vault vault-0 -- vault write -f transit/keys/demo-key-symmetric type=aes256-gcm96
+kubectl exec -n vault vault-0 -- vault write -f transit/keys/demo-key-asymmetric type=rsa-2048
+
+# 3. In a separate terminal, leave running (needed for http://myapp.local)
+minikube tunnel
+```
+
+Then start the port-forwards from sections 4 and 6 for any UI you want to open.
+
+After a `minikube delete`, run `setup-minikube.sh` and `setup-istio.sh` again instead
+(sections 1 and 2).
+
+## Rebuilding an app image
+
+The Deployments use `pullPolicy: Never`, so an image must exist in **minikube's** Docker
+daemon. An image built in your local Docker is not visible to the cluster and the pod
+fails with `ErrImageNeverPull`. From the root of this repo:
+
+```bash
+eval $(minikube docker-env)
+docker build -t logger-service:latest logger-service
+kubectl rollout restart deployment/logger-service -n default
+```
+
+Use the same pattern for the other services (`frontend`, `backend`, `encryption-service`,
+`encryption-service-java`); their Deployment names are listed by `kubectl get deploy -n default`.
 
 ## Teardown
 
