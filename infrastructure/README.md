@@ -16,7 +16,7 @@ Once the stack is running (sections 1–3):
 | App (React frontend) | http://myapp.local/ | `minikube tunnel` | — |
 | Backend API | http://myapp.local/api/users | `minikube tunnel` | — |
 | ArgoCD | https://localhost:8080 | `kubectl port-forward svc/argocd-server -n argocd 8080:443` | `admin` / see section 4 |
-| Grafana | http://localhost:3000 | `kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80` | `admin` / `admin` |
+| Grafana | http://localhost:3000 | `kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80` | none to view; `admin` / `admin` to edit |
 | Kiali | http://localhost:20001 | `kubectl port-forward svc/kiali -n istio-system 20001:20001` | — |
 
 Run each command in its own terminal and leave it open.
@@ -55,7 +55,7 @@ The script:
 2. Builds the five app images inside minikube's Docker daemon (`pullPolicy: Never`).
 3. Installs ArgoCD.
 4. Applies the root Application `gitops-config/clusters/root-local.yaml` (app-of-apps). It
-   creates and owns every other Application: `vault`, `postgres`, `kube-prometheus-stack`,
+   creates and owns every other Application: `vault`, `postgres`, `kube-prometheus-stack`, `loki`,
    `frontend-dev`, `backend-dev`, and `dev-environment` (which owns the two encryption
    services and `logger-service`). A deleted child Application is recreated automatically.
 5. Waits for Vault and creates the Transit keys `demo-key-symmetric` and `demo-key-asymmetric`.
@@ -156,15 +156,43 @@ Open http://localhost:3000 and log in with the default credentials:
 - Username: `admin`
 - Password: `admin`
 
-Grafana may ask you to change the password on first login; you can skip that. To read the
-current password from the cluster:
+Dashboards and Explore are readable **without logging in** (anonymous Viewer access); log
+in as `admin` only to edit. Grafana may ask you to change the password on first login; you
+can skip that. Grafana has no persistent storage here, so a changed password — and any
+dashboard you create in the UI — is lost when its pod restarts, which also resets the
+login to `admin` / `admin`:
 
 ```bash
-kubectl get secret kube-prometheus-stack-grafana -n monitoring \
-  -o jsonpath='{.data.admin-password}' | base64 -d; echo
+kubectl rollout restart deploy/kube-prometheus-stack-grafana -n monitoring
 ```
 
-Prometheus picks up targets for pods with a `ServiceMonitor` or `PodMonitor` attached.
+**Metrics.** Prometheus picks up targets for pods with a `ServiceMonitor` or `PodMonitor`
+attached. The Grafana home page is empty; go to **Dashboards → Browse**:
+
+- `Kubernetes / Compute Resources / Namespace (Pods)` — CPU and memory per pod; pick
+  namespace `default`.
+- Folder `Istio` — Mesh, Service, Workload and Control Plane dashboards (request rate,
+  errors, latency per service).
+
+Or use **Explore** with the `Prometheus` datasource, for example:
+
+```
+sum(rate(istio_requests_total[5m])) by (destination_workload)
+```
+
+Set the time range to `Last 15 minutes` after a restart; older ranges are empty. The etcd,
+scheduler and controller-manager dashboards stay empty on minikube, because those
+components listen on localhost only.
+
+**Logs.** Promtail tails every pod's logs into Loki. In **Explore**, choose the `Loki`
+datasource and query by label, for example the messages written by the scheduled logger
+service:
+
+```
+{namespace="default", container="microservice", pod=~"logger-service-.*"}
+```
+
+Loki keeps logs in the pod's own storage, so history is lost when the Loki pod restarts.
 
 Kiali (mesh topology):
 
@@ -173,6 +201,18 @@ kubectl port-forward svc/kiali -n istio-system 20001:20001
 ```
 
 Open http://localhost:20001.
+
+**Kiali → Grafana uses no credentials.** Kiali calls the Grafana API to check its version
+and to build the "View in Grafana" links. Grafana allows anonymous Viewer access
+(`grafana.ini` `auth.anonymous` in `gitops-config/clusters/local-cluster/core-infrastructure.yaml`),
+so Kiali is configured with `external_services.grafana.auth.type: none` in
+`gitops-config/clusters/local-cluster/istio.yaml`. Kiali's own graph and metrics come from
+Prometheus and do not depend on this.
+
+This is a local-only shortcut: anyone who can reach Grafana can read every dashboard. In
+production, disable anonymous access and use a Grafana service account with the Viewer
+role, a bearer token held in a secret manager and synced into a Kubernetes `Secret`, and
+reference it from the Kiali config (`auth.type: bearer`, `token: secret:<secret-name>:<key>`).
 
 Each `kubectl port-forward` blocks its terminal until you stop it. Run the ArgoCD, Grafana
 and Kiali forwards in three separate terminals; pasting them into one starts only the first.
