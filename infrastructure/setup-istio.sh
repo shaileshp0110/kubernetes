@@ -146,11 +146,11 @@ for ns in default; do
 done
 
 echo "  Restarting demo app workloads to inject sidecars..."
-for dep in frontend-dev backend-dev encryption-service encryption-service-java; do
+for dep in frontend-dev backend-dev encryption-service encryption-service-java logger-service; do
   kubectl rollout restart "deployment/$dep" -n default 2>/dev/null || true
 done
 echo "  Waiting for rollouts..."
-for dep in frontend-dev backend-dev encryption-service encryption-service-java; do
+for dep in frontend-dev backend-dev encryption-service encryption-service-java logger-service; do
   kubectl rollout status "deployment/$dep" -n default --timeout=300s 2>/dev/null || true
 done
 

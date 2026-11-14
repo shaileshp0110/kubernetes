@@ -55,6 +55,9 @@ docker build -t frontend:latest "$PROJECT_ROOT/kubernetes/frontend"
 echo "Building backend..."
 docker build -t backend:latest "$PROJECT_ROOT/kubernetes/backend"
 
+echo "Building logger-service (Rust)..."
+docker build -t logger-service:latest "$PROJECT_ROOT/kubernetes/logger-service"
+
 echo "Docker images built successfully."
 
 # --- 3. Install ArgoCD ---
@@ -99,6 +102,7 @@ echo ""
 echo "ArgoCD will deploy:"
 echo "  - encryption-service, encryption-service-java (from GitHub)"
 echo "  - frontend, backend (local minikube images, pullPolicy: Never)"
+echo "  - logger-service + its CronJob trigger (local minikube image, pullPolicy: Never)"
 
 # --- 6. Wait for Vault ---
 echo ""
